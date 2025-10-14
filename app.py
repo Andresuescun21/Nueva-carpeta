@@ -6,8 +6,8 @@ import plotly.graph_objs as go
 import numpy as np
 import pandas as pd
 import datetime as dt
-
-
+from pathlib import Path
+from typing import Union
 
 app = dash.Dash(
     __name__,
@@ -20,9 +20,38 @@ app.config.suppress_callback_exceptions = True
 
 
 # Load data from csv
-def load_data():
-    # To do: Completar la función 
-    
+def load_data(csv_path: Union[str, Path] = "datos_energia.csv") -> pd.DataFrame:
+    """
+    Carga 'datos_energia.csv' como DataFrame, convierte la columna 'time' a datetime
+    y la establece como índice ordenado.
+
+    Parámetros
+    ----------
+    csv_path : str | Path
+        Ruta al CSV (por defecto 'datos_energia.csv').
+
+    Retorna
+    -------
+    pd.DataFrame
+        DataFrame con índice datetime.
+    """
+    # Lee el CSV y parsea 'time' directamente como fecha
+    df = pd.read_csv(
+        csv_path,
+        parse_dates=["time"],           # convierte 'time' a datetime
+        infer_datetime_format=True,     # ayuda al parser a ser más rápido/fiable
+        dayfirst=False                  # cámbialo a True si tus fechas son dd/mm/yyyy
+    )
+
+    # Asegura que 'time' no tenga nulos y ordénalo por fecha
+    df = df.dropna(subset=["time"]).set_index("time").sort_index()
+
+    # (Opcional) intenta convertir otras columnas a numéricas si venían como texto
+    for c in df.columns:
+        if df[c].dtype == "object":
+            df[c] = pd.to_numeric(df[c], errors="ignore")
+
+    return df
 
 # Cargar datos
 data = load_data()
