@@ -1,0 +1,152 @@
+# pip install yfinance pandas requests python-dateutil
+
+import io
+import sys
+import requests
+import pandas as pd
+import yfinance as yf
+from dateutil.parser import parse as parse_date
+
+def read_tickers_from_github(raw_url: str) -> list[str]:
+    """
+    Lee un archivo alojado en GitHub (raw) que puede ser:
+    - CSV con columna 'ticker' o 'Tickers' o 'symbol'
+    - TXT con un ticker por línea
+    Devuelve una lista de strings (tickers) en mayúscula, únicos y limpios.
+    """
+    resp = requests.get(raw_url, timeout=30)
+    resp.raise_for_status()
+    content = resp.text.strip()
+
+    # Heurística simple: si tiene comas o salto con cabecera => intentar CSV
+    if "," in content or "\n" in content.splitlines()[0]:
+        df = pd.read_csv(io.StringIO(content))
+        possible_cols = [c for c in df.columns if c.lower() in {"ticker", "tickers", "symbol", "symbols"}]
+        if not possible_cols:
+            # si no hay columna clara, intenta primera columna
+            col = df.columns[0]
+        else:
+            col = possible_cols[0]
+        tickers = df[col].astype(str).str.upper().str.strip().tolist()
+    else:
+        # TXT plano
+        tickers = [line.strip().upper() for line in content.splitlines() if line.strip()]
+
+    # únicos, quitar vacíos
+    tickers = [t for t in pd.unique(tickers) if t]
+    return tickers
+
+def df_yf_tidy(
+    tickers,
+    start=None,
+    end=None,
+    interval="1d",
+    auto_adjust=False,  # mantener False para conservar "Adj Close" y las 6 columnas clásicas
+) -> pd.DataFrame:
+    """
+    Devuelve un DataFrame 'largo' con múltiples tickers.
+    Índice por fecha y columna 'Ticker' para identificar.
+    Columnas: Date, Open, High, Low, Close, Adj Close, Volume, Ticker
+    """
+    cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+    frames = []
+
+    for t in tickers:
+        h = yf.Ticker(t).history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
+        if h.empty:
+            # si no hay datos, seguir
+            continue
+        # asegurar columnas
+        for c in cols:
+            if c not in h.columns:
+                h[c] = pd.NA
+        out = h[cols].copy()
+        out["Ticker"] = t
+        frames.append(out.reset_index())  # 'Date' pasa a columna
+
+    if not frames:
+        return pd.DataFrame(columns=["Date"] + cols + ["Ticker"])
+
+    df = pd.concat(frames, ignore_index=True)
+    # Orden de columnas
+    df = df[["Date"] + cols + ["Ticker"]]
+    # Asegurar tipo fecha por si aplica
+    try:
+        df["Date"] = pd.to_datetime(df["Date"], utc=False)
+    except Exception:
+        pass
+    return df
+
+def add_returns_per_ticker(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Añade variaciones calculadas correctamente por cada ticker (no global).
+    - variacion_relativa = AdjClose_t / AdjClose_{t-1}
+    - variacion_porcentual = pct_change * 100
+    - variacion_logaritmica = ln(AdjClose_t / AdjClose_{t-1})
+    """
+    if df.empty:
+        df["variacion_relativa"] = pd.NA
+        df["variacion_porcentual"] = pd.NA
+        df["variacion_logaritmica"] = pd.NA
+        return df
+
+    df = df.sort_values(["Ticker", "Date"]).copy()
+    # groupby para no mezclar series de distintos tickers
+    grp = df.groupby("Ticker", group_keys=False)
+
+    df["variacion_relativa"] = grp["Adj Close"].apply(lambda s: s / s.shift(1))
+    df["variacion_porcentual"] = grp["Adj Close"].pct_change() * 100
+    # evitar log(0)
+    df["variacion_logaritmica"] = grp["Adj Close"].apply(lambda s: (s / s.shift(1)).apply(lambda x: pd.NA if pd.isna(x) or x <= 0 else pd.np.log(x)))
+    return df
+
+def coerce_date(s: str | None):
+    if not s:
+        return None
+    try:
+        return parse_date(s).date().isoformat()
+    except Exception:
+        return s  # dejar tal cual si ya viene en formato válido
+
+if __name__ == "__main__":
+    """
+    Ejemplos de uso:
+
+    python fetch_yf.py \
+      --raw-url https://raw.githubusercontent.com/usuario/repo/branch/data/tickers.csv \
+      --start 2000-01-01 --end 2025-10-25 \
+      --interval 1d \
+      --out data/market_history.csv
+    """
+    import argparse, os
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--raw-url", required=False, help="URL raw de GitHub con la lista de tickers (CSV o TXT).")
+    parser.add_argument("--tickers", nargs="*", help="Alternativa: lista de tickers separada por espacio.")
+    parser.add_argument("--start", default="2000-01-01")
+    parser.add_argument("--end", default=None)
+    parser.add_argument("--interval", default="1d")
+    parser.add_argument("--out", default="data/market_history.csv")
+    args = parser.parse_args()
+
+    # Obtener tickers
+    if args.raw_url:
+        tickers = read_tickers_from_github(args.raw_url)
+    elif args.tickers:
+        tickers = [t.upper() for t in args.tickers]
+    else:
+        # fallback de ejemplo
+        tickers = ["AAPL", "MSFT", "AMZN", "GOOGL", "META"]
+
+    # Fechas
+    start = coerce_date(args.start)
+    end = coerce_date(args.end)
+
+    # Descarga y cálculo
+    df = df_yf_tidy(tickers, start=start, end=end, interval=args.interval)
+    df = add_returns_per_ticker(df)
+
+    # Guardar
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    df.to_csv(args.out, index=False)
+    print(f"✅ Guardado: {args.out} | Filas: {len(df):,} | Tickers: {sorted(set(df['Ticker']))}")
