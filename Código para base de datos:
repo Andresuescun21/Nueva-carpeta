@@ -1,0 +1,105 @@
+ 
+
+# pip install yfinance pandas 
+
+import yfinance as yf 
+
+import pandas as pd 
+
+ 
+
+def df_yf_tidy( 
+
+    tickers, 
+
+    start=None, 
+
+    end=None, 
+
+    interval="1d", 
+
+    auto_adjust=False,  # Se mantiene False para conservar "Adj Close" y así mantener las 6 columnas 
+
+): 
+
+    """ 
+
+    Devuelve un DataFrame 'largo' con múltiples tickers     
+
+    Índice por fecha y columna 'Ticker' para identificar. 
+
+    """ 
+
+    cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"] 
+
+    frames = [] 
+
+ 
+
+    for t in tickers: 
+
+        h = yf.Ticker(t).history( 
+
+            start=start, end=end, interval=interval, auto_adjust=auto_adjust 
+
+        ) 
+
+        if h.empty: 
+
+            continue 
+
+        for c in cols: 
+
+            if c not in h.columns: 
+
+                h[c] = pd.NA 
+
+        out = h[cols].copy() 
+
+        out["Ticker"] = t 
+
+        frames.append(out.reset_index())  # 'Date' pasa a columna 
+
+ 
+
+    if not frames: 
+
+        return pd.DataFrame(columns=["Date"] + cols + ["Ticker"]) 
+
+ 
+
+    df = pd.concat(frames, ignore_index=True) 
+
+    # Orden de columnas 
+
+    df = df[["Date"] + cols + ["Ticker"]] 
+
+    return df 
+
+ 
+
+#Uso para crear base de datos. 
+
+tickers = ["AAPL", "MSFT", "AMZN", "GOOGL", "META"] 
+
+df = df_yf_tidy(tickers, start="2000-01-01", end="2025-10-25", interval="1d") 
+
+ 
+
+Calculo de variaciones 
+
+# Variación relativa 
+
+df["variacion_relativa"] = df["Adj Close"] / df["Adj Close"].shift(1) 
+
+# Variación porcentual (en %) 
+
+df["variacion_porcentual"] = (df["Adj Close"].pct_change()) * 100 
+
+# Variación logarítmica (en valores decimales) 
+
+df["variacion_logaritmica"] = np.log(df["Adj Close"]).diff() 
+
+df.tail() 
+
+ 
